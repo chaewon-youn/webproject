@@ -1,0 +1,83 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isBoardOwner(data) {
+      return signedIn() && (
+        ('ownerUid' in data && data.ownerUid == request.auth.uid) ||
+        ('owner' in data && data.owner == request.auth.token.email)
+      );
+    }
+
+    function canReadBoard(boardId) {
+      let board = get(/databases/$(database)/documents/boards/$(boardId));
+      return !('isPublic' in board.data) || board.data.isPublic == true || isBoardOwner(board.data);
+    }
+
+    match /boards/{boardId} {
+      allow get: if true;
+      allow list: if !('isPublic' in resource.data) || resource.data.isPublic == true || isBoardOwner(resource.data);
+
+      allow create: if request.resource.data.owner is string
+        && request.resource.data.owner.size() >= 2
+        && request.resource.data.ownerUid is string
+        && (
+          (
+            signedIn()
+            && request.resource.data.ownerUid == request.auth.uid
+            && request.resource.data.owner == request.auth.token.email
+          ) ||
+          (
+            !signedIn()
+            && request.resource.data.ownerUid == ""
+          )
+        )
+        && request.resource.data.isPublic is bool
+        && request.resource.data.managePassword is string
+        && request.resource.data.managePassword.size() >= 4
+        && request.resource.data.cells is list
+        && request.resource.data.cells.size() == 9
+        && request.resource.data.views == 0;
+
+      allow update: if isBoardOwner(resource.data) || (
+        (!('isPublic' in resource.data) || resource.data.isPublic == true)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['views'])
+        && request.resource.data.views == resource.data.views + 1
+      );
+
+      allow delete: if isBoardOwner(resource.data) || (!signedIn() && resource.data.ownerUid == "");
+    }
+
+    match /comments/{commentId} {
+      allow read: if signedIn();
+
+      allow create: if signedIn()
+        && request.resource.data.author == request.auth.token.email
+        && request.resource.data.body is string
+        && request.resource.data.body.size() >= 2
+        && request.resource.data.body.size() <= 200
+        && canReadBoard(request.resource.data.boardId);
+
+      allow update, delete: if signedIn()
+        && resource.data.author == request.auth.token.email;
+    }
+
+    match /boardResponses/{responseId} {
+      allow read: if canReadBoard(resource.data.boardId);
+
+      allow create: if request.resource.data.nickname is string
+        && request.resource.data.nickname.size() >= 2
+        && request.resource.data.nickname.size() <= 12
+        && request.resource.data.checkedIndices is list
+        && request.resource.data.checkedIndices.size() >= 1
+        && request.resource.data.checkedIndices.size() <= 9
+        && canReadBoard(request.resource.data.boardId);
+
+      allow update, delete: if false;
+    }
+  }
+}
