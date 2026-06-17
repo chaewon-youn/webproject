@@ -9,10 +9,20 @@ import {
   signInWithPopup,
   signOut
 } from "firebase/auth";
-import { addDoc, collection, deleteDoc, doc, getDoc, increment, onSnapshot, query, serverTimestamp, updateDoc, where } from "firebase/firestore";
+import { addDoc, collection, deleteDoc, doc, getDoc, getDocs, increment, onSnapshot, query, serverTimestamp, updateDoc, where } from "firebase/firestore";
 import "./App.css";
 
 const fallbackOptions = ["검색 결과 1", "검색 결과 2", "검색 결과 3"];
+const bingoLinePatterns = [
+  [0, 1, 2],
+  [3, 4, 5],
+  [6, 7, 8],
+  [0, 3, 6],
+  [1, 4, 7],
+  [2, 5, 8],
+  [0, 4, 8],
+  [2, 4, 6]
+];
 
 const initialBoards = [
   {
@@ -60,6 +70,19 @@ function CoverImage({ src, alt = "", className = "cell-poster" }) {
   return <img src={src} alt={alt} className={className} onError={() => setFailed(true)} />;
 }
 
+function countBingoLines(indices) {
+  const checked = indices instanceof Set ? indices : new Set(indices || []);
+  return bingoLinePatterns.filter((line) => line.every((index) => checked.has(index))).length;
+}
+
+function normalizeRankingTitle(value) {
+  return (value || "")
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[\s._\-:()[\]{}'"“”‘’!?！?·・,，。/\\]/g, "")
+    .trim();
+}
+
 export default function App() {
   const [page, setPage] = useState(() => {
     const fromHash = window.location.hash?.replace("#", "");
@@ -90,6 +113,7 @@ export default function App() {
   const [uploadMsg, setUploadMsg] = useState("");
   const [shareBoard, setShareBoard] = useState(null);
   const [archiveSort, setArchiveSort] = useState("latest");
+  const [expandedSection, setExpandedSection] = useState("");
   const [manageBoardKey, setManageBoardKey] = useState("");
   const [managePasswordInput, setManagePasswordInput] = useState("");
   const [manageMsg, setManageMsg] = useState("");
@@ -98,6 +122,8 @@ export default function App() {
   const [editBoardTitle, setEditBoardTitle] = useState("");
   const [editBoardPassword, setEditBoardPassword] = useState("");
   const [editBoardIsPublic, setEditBoardIsPublic] = useState(true);
+  const [manageCommentBoardId, setManageCommentBoardId] = useState("");
+  const [manageCommentRows, setManageCommentRows] = useState([]);
 
   const [previewBoard, setPreviewBoard] = useState(null);
   const [detailChecked, setDetailChecked] = useState(new Set());
@@ -111,6 +137,10 @@ export default function App() {
   const [responseNickname, setResponseNickname] = useState("");
   const [responseMsg, setResponseMsg] = useState("");
   const [activeResponse, setActiveResponse] = useState(null);
+  const [translatedSynopsisMap, setTranslatedSynopsisMap] = useState({});
+  const [showOriginalSynopsisMap, setShowOriginalSynopsisMap] = useState({});
+  const [translatingKey, setTranslatingKey] = useState("");
+  const [translationMsg, setTranslationMsg] = useState("");
 
   const [directForm, setDirectForm] = useState({ title: "", searchTitle: "", author: "", cover: "", synopsis: "", review: "", kyoboUrl: "", ridiUrl: "" });
   const [modalReview, setModalReview] = useState("");
@@ -119,42 +149,67 @@ export default function App() {
   const feedbackTimerRef = useRef(null);
 
   const filledCount = useMemo(() => makerCells.filter(Boolean).length, [makerCells]);
+  const completedLineCount = useMemo(() => countBingoLines(detailChecked), [detailChecked]);
+  const getBoardTime = (board) => {
+    if (typeof board.createdAtMs === "number") return board.createdAtMs;
+    const time = new Date(board.createdAt).getTime();
+    return Number.isNaN(time) ? 0 : time;
+  };
 
   const rankingData = useMemo(() => {
     const m = new Map();
     boardFeed.forEach((b) => b.cells.forEach((c) => {
       if (!c?.title) return;
-      const current = m.get(c.title) || { title: c.title, count: 0, image: "", author: "" };
-      m.set(c.title, {
+      const rankingKey = c.rankingKey || normalizeRankingTitle(c.searchTitle || c.title);
+      if (!rankingKey) return;
+      const current = m.get(rankingKey) || { title: c.title, count: 0, image: "", author: "", titleCounts: new Map() };
+      const titleCounts = new Map(current.titleCounts);
+      titleCounts.set(c.title, (titleCounts.get(c.title) || 0) + 1);
+      const displayTitle = [...titleCounts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0]?.[0] || c.title;
+      m.set(rankingKey, {
         ...current,
+        title: displayTitle,
         count: current.count + 1,
         image: current.image || c.image || "",
-        author: current.author || c.author || ""
+        author: current.author || c.author || "",
+        titleCounts
       });
     }));
-    return [...m.values()].sort((a, b) => b.count - a.count).slice(0, 5);
+    return [...m.values()]
+      .map((item) => ({
+        title: item.title,
+        count: item.count,
+        image: item.image,
+        author: item.author
+      }))
+      .sort((a, b) => b.count - a.count || a.title.localeCompare(b.title));
   }, [boardFeed]);
 
-  const latestBoards = useMemo(() => {
-    return [...boardFeed]
-      .sort((a, b) => {
-        if (archiveSort === "popular") {
-          const viewDifference = (b.views || 0) - (a.views || 0);
-          if (viewDifference !== 0) return viewDifference;
-        }
-        return new Date(b.createdAt) - new Date(a.createdAt);
-      })
-      .slice(0, 8);
+  const sortedBoards = useMemo(() => {
+    return [...boardFeed].sort((a, b) => {
+      if (archiveSort === "popular") {
+        const viewDifference = (b.views || 0) - (a.views || 0);
+        if (viewDifference !== 0) return viewDifference;
+        return getBoardTime(b) - getBoardTime(a);
+      }
+      const timeDifference = getBoardTime(b) - getBoardTime(a);
+      if (timeDifference !== 0) return timeDifference;
+      return (b.views || 0) - (a.views || 0);
+    });
   }, [boardFeed, archiveSort]);
+
+  const previewRankingData = useMemo(() => rankingData.slice(0, 5), [rankingData]);
+  const previewBoards = useMemo(() => sortedBoards.slice(0, 8), [sortedBoards]);
 
   const myBoards = useMemo(() => {
     if (!currentUser) return [];
     return boardFeed
       .filter((board) => board.owner === currentUser || board.ownerUid === currentUserId)
-      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+      .sort((a, b) => getBoardTime(b) - getBoardTime(a));
   }, [boardFeed, currentUser, currentUserId]);
 
   function boardFromFirestore(id, data) {
+    const createdAtDate = data.createdAt?.toDate ? data.createdAt.toDate() : new Date();
     return {
       id,
       title: data.title || "덕후의 취향 빙고",
@@ -163,8 +218,13 @@ export default function App() {
       isPublic: data.isPublic !== false,
       managePassword: data.managePassword || "",
       views: Number(data.views) || 0,
-      createdAt: data.createdAt?.toDate ? data.createdAt.toDate().toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10),
-      cells: Array.isArray(data.cells) ? data.cells.map((c) => (c ? { ...c, searchTitle: c.searchTitle || c.title || "" } : null)) : Array(9).fill(null)
+      createdAt: createdAtDate.toISOString().slice(0, 10),
+      createdAtMs: createdAtDate.getTime(),
+      cells: Array.isArray(data.cells) ? data.cells.map((c) => (c ? {
+        ...c,
+        searchTitle: c.searchTitle || c.title || "",
+        rankingKey: c.rankingKey || normalizeRankingTitle(c.searchTitle || c.title || "")
+      } : null)) : Array(9).fill(null)
     };
   }
 
@@ -190,6 +250,7 @@ export default function App() {
     setDeleteMsg("");
     setResponseMsg("");
     setActiveResponse(null);
+    setTranslationMsg("");
     setPage("detail");
   }
 
@@ -273,7 +334,7 @@ export default function App() {
     const publishRows = () => {
       const merged = new Map();
       [...publicRows, ...ownerRows].forEach((board) => merged.set(board.id, board));
-      const rows = [...merged.values()].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+      const rows = [...merged.values()].sort((a, b) => getBoardTime(b) - getBoardTime(a));
       setBoardFeed(rows.length > 0 ? rows : initialBoards);
     };
 
@@ -356,6 +417,115 @@ export default function App() {
     };
   }, []);
 
+  function getSynopsisKey(cell = selectedPreviewCell) {
+    if (!cell?.title) return "";
+    return `${previewBoard?.id || "preview"}:${cell.title}`;
+  }
+
+  function getTranslatedSynopsis() {
+    return translatedSynopsisMap[getSynopsisKey()] || "";
+  }
+
+  function shouldShowOriginalSynopsis() {
+    return showOriginalSynopsisMap[getSynopsisKey()] === true;
+  }
+
+  function getDisplayedSynopsis() {
+    const translated = getTranslatedSynopsis();
+    if (translated && !shouldShowOriginalSynopsis()) return translated;
+    return selectedPreviewCell?.synopsis || "-";
+  }
+
+  function showOriginalSynopsis() {
+    const key = getSynopsisKey();
+    if (!key) return;
+    setShowOriginalSynopsisMap((prev) => ({ ...prev, [key]: true }));
+    setTranslationMsg("원문을 표시했습니다.");
+  }
+
+  function decodeHtmlText(value) {
+    const textarea = document.createElement("textarea");
+    textarea.innerHTML = value;
+    return textarea.value;
+  }
+
+  function splitTextForTranslation(text, maxLength = 450) {
+    const source = text.trim();
+    if (source.length <= maxLength) return [source];
+
+    const chunks = [];
+    const sentences = source.match(/[^.!?。！？]+[.!?。！？]*/g) || [source];
+    let current = "";
+
+    sentences.forEach((sentence) => {
+      const next = current ? `${current} ${sentence.trim()}` : sentence.trim();
+      if (next.length <= maxLength) {
+        current = next;
+        return;
+      }
+
+      if (current) chunks.push(current);
+      if (sentence.length <= maxLength) {
+        current = sentence.trim();
+        return;
+      }
+
+      for (let i = 0; i < sentence.length; i += maxLength) {
+        chunks.push(sentence.slice(i, i + maxLength).trim());
+      }
+      current = "";
+    });
+
+    if (current) chunks.push(current);
+    return chunks.filter(Boolean);
+  }
+
+  async function translateTextChunk(text) {
+    const params = new URLSearchParams({
+      q: text,
+      langpair: "en|ko"
+    });
+    const res = await fetch(`https://api.mymemory.translated.net/get?${params.toString()}`);
+    if (!res.ok) throw new Error();
+    const json = await res.json();
+    const translated = decodeHtmlText(json.responseData?.translatedText || "").trim();
+    if (!translated || json.responseStatus >= 400) throw new Error();
+    return translated;
+  }
+
+  async function translateSelectedSynopsis() {
+    const synopsis = selectedPreviewCell?.synopsis || "";
+    const key = getSynopsisKey();
+    if (!key || !synopsis || synopsis === "줄거리 정보 없음") {
+      return setTranslationMsg("번역할 줄거리 정보가 없습니다.");
+    }
+
+    try {
+      setTranslationMsg("");
+      setTranslatingKey(key);
+      const cachedTranslation = translatedSynopsisMap[key];
+      if (cachedTranslation) {
+        setShowOriginalSynopsisMap((prev) => ({ ...prev, [key]: false }));
+        setTranslationMsg("한국어 번역을 적용했습니다.");
+        return;
+      }
+      const chunks = splitTextForTranslation(synopsis);
+      const translatedParts = [];
+      for (const chunk of chunks) {
+        translatedParts.push(await translateTextChunk(chunk));
+      }
+      const translated = translatedParts.join(" ").trim();
+      if (!translated) throw new Error();
+      setTranslatedSynopsisMap((prev) => ({ ...prev, [key]: translated }));
+      setShowOriginalSynopsisMap((prev) => ({ ...prev, [key]: false }));
+      setTranslationMsg("한국어 번역을 적용했습니다.");
+    } catch {
+      setTranslationMsg("번역에 실패했습니다. 잠시 후 다시 시도해 주세요.");
+    } finally {
+      setTranslatingKey("");
+    }
+  }
+
   function openPicker(idx) {
     setActiveCellIndex(idx);
     setPickerOpen(true);
@@ -382,6 +552,7 @@ export default function App() {
       ridiUrl: payload.ridiUrl || toRidiSearch(payload.title || payload.searchTitle || "")
     };
     if (!item.title.trim()) return setFeedback("작품명은 필수입니다.", "error");
+    item.rankingKey = normalizeRankingTitle(item.searchTitle || item.title);
     const next = [...makerCells];
     next[activeCellIndex] = item;
     setMakerCells(next);
@@ -502,9 +673,11 @@ export default function App() {
           id: d.id,
           body: data.body || "",
           author: data.author || "익명",
+          authorUid: data.authorUid || "",
+          hidden: data.hidden === true,
           createdAt: data.createdAt?.toDate ? data.createdAt.toDate() : new Date(0)
         };
-      });
+      }).filter((row) => !row.hidden);
       rows.sort((a, b) => b.createdAt - a.createdAt);
       setGuestbookRows(rows);
     });
@@ -524,6 +697,8 @@ export default function App() {
         return {
           id: d.id,
           nickname: data.nickname || "익명",
+          author: data.author || "",
+          authorUid: data.authorUid || "",
           checkedIndices: Array.isArray(data.checkedIndices) ? data.checkedIndices : [],
           createdAt: data.createdAt?.toDate ? data.createdAt.toDate() : new Date(0)
         };
@@ -547,12 +722,32 @@ export default function App() {
         boardId: previewBoard.id,
         body,
         author: currentUser,
+        authorUid: currentUserId,
+        hidden: false,
         createdAt: serverTimestamp()
       });
       setGuestbookInput("");
       setGuestbookMsg("댓글이 등록되었습니다.");
     } catch {
       setGuestbookMsg("댓글 등록에 실패했습니다.");
+    }
+  }
+
+  async function deleteMyComment(row) {
+    if (!db) return setGuestbookMsg("Firebase DB가 아직 연결되지 않았습니다.");
+    const isMyComment = row.authorUid ? row.authorUid === currentUserId : row.author === currentUser;
+    if (!currentUser || !isMyComment) return setGuestbookMsg("내가 작성한 댓글만 삭제할 수 있습니다.");
+    if (!window.confirm("이 댓글을 삭제할까요?")) return;
+
+    try {
+      await deleteDoc(doc(db, "comments", row.id));
+      setGuestbookMsg("댓글을 삭제했습니다.");
+    } catch (error) {
+      if (error.code === "permission-denied") {
+        setGuestbookMsg("댓글 삭제 권한이 없습니다. 작성한 계정으로 로그인해 주세요.");
+      } else {
+        setGuestbookMsg("댓글 삭제에 실패했습니다.");
+      }
     }
   }
 
@@ -569,6 +764,8 @@ export default function App() {
       await addDoc(collection(db, "boardResponses"), {
         boardId: previewBoard.id,
         nickname,
+        author: currentUser || "",
+        authorUid: currentUserId || "",
         checkedIndices: [...detailChecked].sort((a, b) => a - b),
         createdAt: serverTimestamp()
       });
@@ -593,6 +790,67 @@ export default function App() {
     setActiveResponse(null);
     setDetailChecked(new Set());
     setResponseMsg("");
+  }
+
+  async function deleteMyResponse(response) {
+    if (!db) return setResponseMsg("Firebase DB가 아직 연결되지 않았습니다.");
+    if (!currentUserId || response.authorUid !== currentUserId) return setResponseMsg("로그인한 본인의 풀이 결과만 삭제할 수 있습니다.");
+    if (!window.confirm(`"${response.nickname}" 풀이 결과를 삭제할까요?`)) return;
+
+    try {
+      await deleteDoc(doc(db, "boardResponses", response.id));
+      if (activeResponse?.id === response.id) restoreMyResult();
+      setResponseMsg("내 풀이 결과를 삭제했습니다.");
+    } catch (error) {
+      if (error.code === "permission-denied") {
+        setResponseMsg("삭제 권한이 없습니다. 결과를 등록한 계정으로 로그인해 주세요.");
+      } else {
+        setResponseMsg("풀이 결과 삭제에 실패했습니다.");
+      }
+    }
+  }
+
+  async function loadManageComments(board) {
+    if (!db) return setManageMsg("Firebase DB가 아직 연결되지 않았습니다.");
+    try {
+      const q = query(collection(db, "comments"), where("boardId", "==", board.id));
+      const snap = await getDocs(q);
+      const rows = snap.docs.map((d) => {
+        const data = d.data();
+        return {
+          id: d.id,
+          boardId: data.boardId || "",
+          body: data.body || "",
+          author: data.author || "익명",
+          hidden: data.hidden === true,
+          createdAt: data.createdAt?.toDate ? data.createdAt.toDate() : new Date(0)
+        };
+      });
+      rows.sort((a, b) => b.createdAt - a.createdAt);
+      setManageCommentBoardId(board.id);
+      setManageCommentRows(rows);
+      setManageMsg(rows.length === 0 ? "관리할 댓글이 없습니다." : "댓글 목록을 불러왔습니다.");
+    } catch {
+      setManageMsg("댓글 목록을 불러오지 못했습니다.");
+    }
+  }
+
+  async function toggleCommentHidden(comment) {
+    if (!db) return setManageMsg("Firebase DB가 아직 연결되지 않았습니다.");
+    try {
+      const nextHidden = !comment.hidden;
+      await updateDoc(doc(db, "comments", comment.id), { hidden: nextHidden });
+      setManageCommentRows((rows) => rows.map((row) => (
+        row.id === comment.id ? { ...row, hidden: nextHidden } : row
+      )));
+      setManageMsg(nextHidden ? "댓글을 숨김 처리했습니다." : "댓글 숨김을 해제했습니다.");
+    } catch (error) {
+      if (error.code === "permission-denied") {
+        setManageMsg("댓글 숨김 권한이 없습니다. 빙고 작성자 계정으로 로그인해 주세요.");
+      } else {
+        setManageMsg("댓글 상태를 변경하지 못했습니다.");
+      }
+    }
   }
 
   function startManageEdit(board) {
@@ -798,71 +1056,76 @@ export default function App() {
     if (!board) return Promise.reject(new Error("empty board"));
     const canvas = document.createElement("canvas");
     const size = 1080;
-    const padding = 72;
+    const padding = 54;
     const gap = 18;
-    const header = 150;
-    const cellSize = (size - padding * 2 - gap * 2) / 3;
+    const header = 100;
+    const cellWidth = (size - padding * 2 - gap * 2) / 3;
+    const cellHeight = Math.round(cellWidth * 1.34);
+    const boardHeight = cellHeight * 3 + gap * 2;
     canvas.width = size;
-    canvas.height = size + header;
+    canvas.height = header + boardHeight + padding;
     const ctx = canvas.getContext("2d");
 
     ctx.fillStyle = "#f1f1f2";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     ctx.fillStyle = "#fcfcfd";
-    ctx.fillRect(36, 36, canvas.width - 72, canvas.height - 72);
+    ctx.fillRect(24, 24, canvas.width - 48, canvas.height - 48);
     ctx.strokeStyle = "#d5d5da";
-    ctx.lineWidth = 4;
-    ctx.strokeRect(36, 36, canvas.width - 72, canvas.height - 72);
+    ctx.lineWidth = 2;
+    ctx.strokeRect(24, 24, canvas.width - 48, canvas.height - 48);
 
     ctx.fillStyle = "#1f1f22";
-    ctx.font = "bold 46px sans-serif";
+    ctx.font = "bold 38px sans-serif";
     ctx.textAlign = "center";
-    ctx.fillText(board.title || "덕고 빙고", size / 2, 96);
-    ctx.font = "24px sans-serif";
-    ctx.fillStyle = "#6b6b73";
-    ctx.fillText("Duck-Go 만화 취향 빙고", size / 2, 132);
+    ctx.fillText(board.title || "덕고 빙고", size / 2, 70);
 
     const images = await Promise.all(board.cells.map((cell) => loadCanvasImage(cell?.image)));
 
     board.cells.forEach((cell, i) => {
       const col = i % 3;
       const row = Math.floor(i / 3);
-      const x = padding + col * (cellSize + gap);
-      const y = header + padding + row * (cellSize + gap);
-      const inner = 18;
+      const x = padding + col * (cellWidth + gap);
+      const y = header + row * (cellHeight + gap);
+      const inner = 22;
       const posterX = x + inner;
       const posterY = y + inner;
-      const posterWidth = cellSize - inner * 2;
-      const posterHeight = cellSize * 0.68;
-      const titleY = posterY + posterHeight + 42;
+      const posterWidth = cellWidth - inner * 2;
+      const posterHeight = Math.round(posterWidth * 1.18);
+      const titleY = posterY + posterHeight + 40;
 
       ctx.fillStyle = "#fff5f8";
-      ctx.fillRect(x, y, cellSize, cellSize);
+      ctx.beginPath();
+      ctx.roundRect(x, y, cellWidth, cellHeight, 24);
+      ctx.fill();
       ctx.strokeStyle = "#c57a90";
-      ctx.lineWidth = 4;
-      ctx.strokeRect(x, y, cellSize, cellSize);
+      ctx.lineWidth = 3;
+      ctx.stroke();
 
       ctx.save();
       ctx.beginPath();
-      ctx.rect(posterX, posterY, posterWidth, posterHeight);
+      ctx.roundRect(posterX, posterY, posterWidth, posterHeight, 16);
       ctx.clip();
       const drewImage = drawCover(ctx, images[i], posterX, posterY, posterWidth, posterHeight);
       ctx.restore();
 
       if (!drewImage) {
         ctx.fillStyle = "#f3eef1";
-        ctx.fillRect(posterX, posterY, posterWidth, posterHeight);
+        ctx.beginPath();
+        ctx.roundRect(posterX, posterY, posterWidth, posterHeight, 16);
+        ctx.fill();
         ctx.strokeStyle = "#d6c8cf";
         ctx.lineWidth = 2;
         ctx.setLineDash([10, 8]);
-        ctx.strokeRect(posterX, posterY, posterWidth, posterHeight);
+        ctx.beginPath();
+        ctx.roundRect(posterX, posterY, posterWidth, posterHeight, 16);
+        ctx.stroke();
         ctx.setLineDash([]);
       }
 
       ctx.fillStyle = "#9e1b3f";
-      ctx.font = "bold 30px sans-serif";
+      ctx.font = "bold 26px sans-serif";
       ctx.textAlign = "center";
-      drawWrappedText(ctx, cell?.title || "빈 칸", x + cellSize / 2, titleY, cellSize - 44, 2, 36);
+      drawWrappedText(ctx, cell?.title || "빈 칸", x + cellWidth / 2, titleY, cellWidth - 36, 2, 32);
     });
 
     return new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
@@ -910,6 +1173,7 @@ export default function App() {
 
   async function uploadBoard() {
     if (!db) return setUploadMsg("Firebase DB가 아직 연결되지 않았습니다.");
+    setShareBoard(null);
     if (filledCount !== 9) return setUploadMsg("업로드 전에 9칸을 모두 채워주세요.");
     const ownerName = currentUser || boardOwnerId.trim();
     if (!ownerName) return setUploadMsg("비회원 업로드는 작성자 아이디를 입력해 주세요.");
@@ -935,7 +1199,8 @@ export default function App() {
         isPublic: payload.isPublic,
         cells: payload.cells,
         views: 0,
-        createdAt: new Date().toISOString().slice(0, 10)
+        createdAt: new Date().toISOString().slice(0, 10),
+        createdAtMs: Date.now()
       };
       setShareBoard(board);
       setUploadMsg("업로드 완료! 아래에서 링크나 사진으로 공유할 수 있습니다.");
@@ -953,6 +1218,7 @@ export default function App() {
       ownerUid: currentUserId || "",
       isPublic: boardIsPublic,
       createdAt: new Date().toISOString().slice(0, 10),
+      createdAtMs: Date.now(),
       cells: makerCells
     };
     setPreviewBoard(board);
@@ -960,10 +1226,12 @@ export default function App() {
     setDetailChecked(new Set());
     setDetailTab("info");
     setDeleteMsg("");
+    setTranslationMsg("");
     setPage("detail");
   }
 
   function togglePreviewCheck(i) {
+    setTranslationMsg("");
     if (activeResponse) {
       setSelectedPreviewCell(previewBoard?.cells[i] || null);
       return;
@@ -985,8 +1253,8 @@ export default function App() {
       <header className="topbar">
         <button className="linklike brand" onClick={() => setPage("home")}>덕고(Duck-Go)</button>
         <nav>
-          <button className="linklike" onClick={() => setPage("home")}>랭킹</button>
-          <button className="linklike" onClick={() => setPage("home")}>탐색</button>
+          <button className="linklike" onClick={() => { setExpandedSection("boards"); setPage("expanded"); }}>탐색</button>
+          <button className="linklike" onClick={() => { setExpandedSection("ranking"); setPage("expanded"); }}>랭킹</button>
           <button className="linklike" onClick={() => setPage("maker")}>제작소</button>
           <button className="linklike" onClick={() => setPage("manage")}>관리</button>
           <button className="btn small login-btn" onClick={() => currentUser ? logout() : setPage("login")}>{currentUser ? "로그아웃" : "로그인"}</button>
@@ -1007,50 +1275,112 @@ export default function App() {
             </section>
 
             <section className="panel">
-              <div className="head"><h2>실시간 인기 만화 Top 5</h2><button className="linklike section-link">전체보기</button></div>
+              <div className="head"><h2>실시간 인기 만화 Top 5</h2><button className="linklike section-link" onClick={() => { setExpandedSection("ranking"); setPage("expanded"); }}>전체보기</button></div>
               <div className="rank-grid">
-                {rankingData.map((x, idx) => (
-                  <article className="rank-card" key={`${x.title}-${idx}`}>
-                    <CoverImage src={x.image} alt={x.title} className="rank-cover" />
-                    <div className="meta"><strong>#{idx + 1} {x.title}</strong><br />등록 {x.count}회</div>
-                  </article>
-                ))}
+                {previewRankingData.length === 0 ? (
+                  <div className="empty-state">아직 랭킹에 반영할 작품이 없습니다. 첫 빙고를 업로드해 보세요.</div>
+                ) : (
+                  previewRankingData.map((x, idx) => (
+                    <article className="rank-card" key={`${x.title}-${idx}`}>
+                      <CoverImage src={x.image} alt={x.title} className="rank-cover" />
+                      <div className="meta"><strong>#{idx + 1} {x.title}</strong><br />등록 {x.count}회</div>
+                    </article>
+                  ))
+                )}
               </div>
             </section>
 
             <section className="panel browse-panel">
-              <div className="head"><h2>빙고판 둘러보기</h2><button className="linklike section-link">전체보기</button></div>
+              <div className="head"><h2>빙고판 둘러보기</h2><button className="linklike section-link" onClick={() => { setExpandedSection("boards"); setPage("expanded"); }}>전체보기</button></div>
               <div className="split-2">
-                <article className="card-item browse-option">
+                <article className={`card-item browse-option ${archiveSort === "popular" ? "active" : ""}`}>
                   <h3>인기 빙고 둘러보기</h3>
                   <p className="meta">조회수가 높은 빙고판을 먼저 확인해 보세요.</p>
                   <button className={`btn ${archiveSort === "popular" ? "primary" : ""}`} onClick={() => setArchiveSort("popular")}>인기 빙고 보기</button>
                 </article>
-                <article className="card-item browse-option">
+                <article className={`card-item browse-option ${archiveSort === "latest" ? "active" : ""}`}>
                   <h3>최신 빙고 둘러보기</h3>
                   <p className="meta">방금 올라온 빙고판을 빠르게 확인해 보세요.</p>
                   <button className={`btn ${archiveSort === "latest" ? "primary" : ""}`} onClick={() => setArchiveSort("latest")}>최신 빙고 보기</button>
                 </article>
               </div>
               <div className="latest-grid">
-                {latestBoards.map((b) => (
-                  <article className="rank-card clickable" key={b.id} onClick={() => { setPreviewBoard(b); setSelectedPreviewCell(b.cells[0] || null); setDetailChecked(new Set()); setPage("detail"); }}>
-                    <div className="board-mini-grid" aria-hidden="true">
-                      {b.cells.map((cell, cellIndex) => (
-                        <div className="board-mini-cell" key={`${b.id}-${cellIndex}`}>
-                          <CoverImage src={cell?.image} alt={cell?.title || ""} className="board-mini-cover" />
-                        </div>
-                      ))}
-                    </div>
-                    <div className="meta">
-                      <strong>{b.title}</strong><br />
-                      조회 {b.views || 0}회 · {b.isPublic ? "공개" : "비공개"} · {b.createdAt}
-                    </div>
-                  </article>
-                ))}
+                {previewBoards.length === 0 ? (
+                  <div className="empty-state">아직 공개된 빙고가 없습니다. 제작소에서 빙고를 업로드해 보세요.</div>
+                ) : (
+                  previewBoards.map((b) => (
+                    <article className="rank-card clickable" key={b.id} onClick={() => { setPreviewBoard(b); setSelectedPreviewCell(b.cells[0] || null); setDetailChecked(new Set()); setTranslationMsg(""); setPage("detail"); }}>
+                      <div className="board-mini-grid" aria-hidden="true">
+                        {b.cells.map((cell, cellIndex) => (
+                          <div className="board-mini-cell" key={`${b.id}-${cellIndex}`}>
+                            <CoverImage src={cell?.image} alt={cell?.title || ""} className="board-mini-cover" />
+                          </div>
+                        ))}
+                      </div>
+                      <div className="meta">
+                        <strong>{b.title}</strong><br />
+                        조회 {b.views || 0}회 · {b.isPublic ? "공개" : "비공개"}<br />
+                        {b.createdAt}
+                      </div>
+                    </article>
+                  ))
+                )}
               </div>
             </section>
           </>
+        )}
+
+        {page === "expanded" && (
+          <section className="panel expanded-panel">
+            <div className="head">
+              <h2>{expandedSection === "ranking" ? "실시간 인기 만화 전체보기" : "빙고판 전체보기"}</h2>
+              <button className="btn" onClick={() => setPage("home")}>돌아가기</button>
+            </div>
+
+            {expandedSection === "ranking" ? (
+              <div className="rank-grid expanded-grid">
+                {rankingData.length === 0 ? (
+                  <div className="empty-state">아직 랭킹에 반영할 작품이 없습니다.</div>
+                ) : (
+                  rankingData.map((x, idx) => (
+                    <article className="rank-card" key={`expanded-${x.title}-${idx}`}>
+                      <CoverImage src={x.image} alt={x.title} className="rank-cover" />
+                      <div className="meta"><strong>#{idx + 1} {x.title}</strong><br />등록 {x.count}회</div>
+                    </article>
+                  ))
+                )}
+              </div>
+            ) : (
+              <>
+                <div className="archive-toggle">
+                  <button className={`btn ${archiveSort === "popular" ? "primary" : ""}`} onClick={() => setArchiveSort("popular")}>인기순</button>
+                  <button className={`btn ${archiveSort === "latest" ? "primary" : ""}`} onClick={() => setArchiveSort("latest")}>최신순</button>
+                </div>
+                <div className="latest-grid expanded-grid">
+                  {sortedBoards.length === 0 ? (
+                    <div className="empty-state">아직 둘러볼 빙고가 없습니다. 제작소에서 첫 빙고를 만들어 보세요.</div>
+                  ) : (
+                    sortedBoards.map((b) => (
+                      <article className="rank-card clickable" key={`expanded-${b.id}`} onClick={() => showBoardDetail(b)}>
+                        <div className="board-mini-grid" aria-hidden="true">
+                          {b.cells.map((cell, cellIndex) => (
+                            <div className="board-mini-cell" key={`${b.id}-expanded-${cellIndex}`}>
+                              <CoverImage src={cell?.image} alt={cell?.title || ""} className="board-mini-cover" />
+                            </div>
+                          ))}
+                        </div>
+                        <div className="meta">
+                          <strong>{b.title}</strong><br />
+                          조회 {b.views || 0}회 · {b.isPublic ? "공개" : "비공개"}<br />
+                          {b.createdAt}
+                        </div>
+                      </article>
+                    ))
+                  )}
+                </div>
+              </>
+            )}
+          </section>
         )}
 
         {page === "maker" && (
@@ -1124,9 +1454,15 @@ export default function App() {
                 </span>
               </label>
               <button className="btn primary" onClick={uploadBoard}>빙고 업로드</button>
-              {uploadMsg && <p className="meta">{uploadMsg}</p>}
+              {uploadMsg && <p className={shareBoard ? "upload-success" : "meta"}>{uploadMsg}</p>}
               {shareBoard && (
                 <div className="share-box">
+                  {!currentUser && (
+                    <div className="guest-upload-notice">
+                      <strong>비회원 관리 안내</strong>
+                      <span>수정이나 삭제를 하려면 아래 빙고 ID와 방금 입력한 관리 비밀번호가 필요합니다. 잊지 않게 저장해 주세요.</span>
+                    </div>
+                  )}
                   <input className="field share-url" value={shareBoard.id} readOnly aria-label="빙고 ID" />
                   <input className="field share-url" value={getShareUrl(shareBoard.id)} readOnly aria-label="공유 링크" />
                   <div className="share-actions">
@@ -1135,6 +1471,7 @@ export default function App() {
                     <button className="btn" onClick={() => downloadBoardImage()}>사진 저장</button>
                     <button className="btn primary" onClick={() => shareBoardImage()}>사진 공유</button>
                   </div>
+                  <button className="btn primary home-after-upload" onClick={() => setPage("home")}>홈으로 돌아가기</button>
                 </div>
               )}
             </section>
@@ -1178,7 +1515,7 @@ export default function App() {
             </div>
             <p className="meta">
               작성자: {previewBoard.owner} · {previewBoard.isPublic ? "공개" : "비공개"} ·
-              {activeResponse ? ` ${activeResponse.nickname}님의 결과` : " 내가 푼 결과"} · 체크: {detailChecked.size}/9
+              {activeResponse ? ` ${activeResponse.nickname}님의 결과` : " 내가 푼 결과"} · 체크: {detailChecked.size}/9 · 빙고 {completedLineCount}줄
             </p>
             {deleteMsg && <p className="status error">{deleteMsg}</p>}
 
@@ -1188,14 +1525,14 @@ export default function App() {
                   <div className="result-view-banner">
                     <div>
                       <strong>{activeResponse.nickname}님의 풀이 결과를 보는 중</strong>
-                      <span>체크 {activeResponse.checkedIndices.length}/9 · 내 결과를 다시 풀려면 원본으로 돌아가세요.</span>
+                      <span>체크 {activeResponse.checkedIndices.length}/9 · 빙고 {countBingoLines(activeResponse.checkedIndices)}줄 · 내 결과를 다시 풀려면 원본으로 돌아가세요.</span>
                     </div>
                     <button className="btn" onClick={restoreMyResult}>원본으로 돌아가기</button>
                   </div>
                 )}
 
                 <div className="completion-block detail-completion">
-                  <div className="completion-label"><strong>빙고 완료도</strong><span>{detailChecked.size}/9</span></div>
+                  <div className="completion-label"><strong>빙고 완료도</strong><span>{detailChecked.size}/9 · {completedLineCount}줄</span></div>
                   <div className="completion-track"><span style={{ width: `${(detailChecked.size / 9) * 100}%` }} /></div>
                 </div>
 
@@ -1217,6 +1554,7 @@ export default function App() {
                         ? "샘플 빙고는 체험용이라 결과를 저장할 수 없습니다."
                         : "왼쪽 빙고판에서 본 작품을 체크한 뒤 닉네임으로 결과를 남길 수 있습니다."}
                     </p>
+                    {!previewBoard.id.startsWith("seed-") && <p className="bingo-line-badge">현재 빙고 {completedLineCount}줄</p>}
                   </div>
                   <div className="response-form">
                     <input
@@ -1243,7 +1581,19 @@ export default function App() {
                     <article className="card-item">
                       <h3>{selectedPreviewCell?.title || "칸을 선택해주세요"}</h3>
                       <p className="meta"><strong>작가:</strong> {selectedPreviewCell?.author || "-"}</p>
-                      <p className="meta"><strong>줄거리:</strong> {selectedPreviewCell?.synopsis || "-"}</p>
+                      <p className="meta synopsis-text"><strong>줄거리:</strong> {getDisplayedSynopsis()}</p>
+                      {selectedPreviewCell?.synopsis && (
+                        <div className="translation-row">
+                          {getTranslatedSynopsis() && !shouldShowOriginalSynopsis() ? (
+                            <button className="btn small" onClick={showOriginalSynopsis}>원문 보기</button>
+                          ) : (
+                            <button className="btn small" onClick={translateSelectedSynopsis} disabled={translatingKey === getSynopsisKey()}>
+                              {translatingKey === getSynopsisKey() ? "번역 중..." : "한국어로 번역"}
+                            </button>
+                          )}
+                          {translationMsg && <span>{translationMsg}</span>}
+                        </div>
+                      )}
                     </article>
                     {selectedPreviewCell?.title && (
                       <div className="detail-link-block">
@@ -1278,8 +1628,13 @@ export default function App() {
                         ) : (
                           guestbookRows.map((row) => (
                             <article className="comment-item" key={row.id}>
-                              <p>{row.body}</p>
-                              <span>{row.author} · {row.createdAt.toLocaleDateString("ko-KR")}</span>
+                              <div>
+                                <p>{row.body}</p>
+                                <span>{row.author} · {row.createdAt.toLocaleDateString("ko-KR")}</span>
+                              </div>
+                              {(row.authorUid ? row.authorUid === currentUserId : row.author === currentUser) && (
+                                <button className="btn danger small" onClick={() => deleteMyComment(row)}>삭제</button>
+                              )}
                             </article>
                           ))
                         )}
@@ -1303,9 +1658,14 @@ export default function App() {
                           <article className={`response-item ${activeResponse?.id === response.id ? "active" : ""}`} key={response.id}>
                             <div>
                               <strong>{response.nickname}</strong>
-                              <span>체크 {response.checkedIndices.length}/9 · {response.createdAt.toLocaleDateString("ko-KR")}</span>
+                              <span>체크 {response.checkedIndices.length}/9 · 빙고 {countBingoLines(response.checkedIndices)}줄 · {response.createdAt.toLocaleDateString("ko-KR")}</span>
                             </div>
-                        <button className="btn" onClick={() => showResponseResult(response)}>{activeResponse?.id === response.id ? "보는 중" : "결과 보기"}</button>
+                        <div className="response-actions">
+                          <button className="btn" onClick={() => showResponseResult(response)}>{activeResponse?.id === response.id ? "보는 중" : "결과 보기"}</button>
+                          {currentUserId && response.authorUid === currentUserId && (
+                            <button className="btn danger" onClick={() => deleteMyResponse(response)}>내 결과 삭제</button>
+                          )}
+                        </div>
                       </article>
                         ))
                       )}
@@ -1377,14 +1737,42 @@ export default function App() {
                                 <p className="meta">ID: {board.id}</p>
                               </div>
                               <div className="manage-actions">
-                                <button className="btn primary" onClick={() => showBoardDetail(board)}>상세 보기</button>
-                                <button className="btn" onClick={() => startManageEdit(board)}>수정</button>
-                                <button className="btn danger" onClick={() => deleteBoardFromManage(board)}>삭제</button>
-                                <button className="btn" onClick={() => copyShareLink(board, setManageMsg)}>링크 복사</button>
-                                <button className="btn" onClick={() => shareLink(board, setManageMsg)}>링크 공유</button>
-                                <button className="btn" onClick={() => downloadBoardImage(board, setManageMsg)}>사진 저장</button>
-                                <button className="btn" onClick={() => shareBoardImage(board, setManageMsg)}>사진 공유</button>
+                                <div className="manage-action-row">
+                                  <button className="btn primary" onClick={() => showBoardDetail(board)}>상세 보기</button>
+                                  <button className="btn" onClick={() => startManageEdit(board)}>수정</button>
+                                  <button className="btn danger" onClick={() => deleteBoardFromManage(board)}>삭제</button>
+                                  <button className="btn" onClick={() => loadManageComments(board)}>댓글 관리</button>
+                                </div>
+                                <div className="manage-action-row">
+                                  <button className="btn" onClick={() => copyShareLink(board, setManageMsg)}>링크 복사</button>
+                                  <button className="btn" onClick={() => shareLink(board, setManageMsg)}>링크 공유</button>
+                                  <button className="btn" onClick={() => downloadBoardImage(board, setManageMsg)}>사진 저장</button>
+                                  <button className="btn" onClick={() => shareBoardImage(board, setManageMsg)}>사진 공유</button>
+                                </div>
                               </div>
+                              {manageCommentBoardId === board.id && (
+                                <div className="manage-comment-box">
+                                  <div className="head">
+                                    <h4>댓글 관리</h4>
+                                    <button className="btn small" onClick={() => { setManageCommentBoardId(""); setManageCommentRows([]); }}>닫기</button>
+                                  </div>
+                                  {manageCommentRows.length === 0 ? (
+                                    <p className="meta">등록된 댓글이 없습니다.</p>
+                                  ) : (
+                                    <div className="manage-comment-list">
+                                      {manageCommentRows.map((comment) => (
+                                        <article className={`manage-comment-item ${comment.hidden ? "hidden" : ""}`} key={comment.id}>
+                                          <div>
+                                            <p>{comment.body}</p>
+                                            <span>{comment.author} · {comment.createdAt.toLocaleDateString("ko-KR")} · {comment.hidden ? "숨김" : "표시 중"}</span>
+                                          </div>
+                                          <button className="btn" onClick={() => toggleCommentHidden(comment)}>{comment.hidden ? "숨김 해제" : "숨김"}</button>
+                                        </article>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                              )}
                             </>
                           )}
                         </div>

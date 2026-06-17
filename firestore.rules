@@ -18,6 +18,11 @@ service cloud.firestore {
       return !('isPublic' in board.data) || board.data.isPublic == true || isBoardOwner(board.data);
     }
 
+    function isBoardOwnerById(boardId) {
+      let board = get(/databases/$(database)/documents/boards/$(boardId));
+      return isBoardOwner(board.data);
+    }
+
     match /boards/{boardId} {
       allow get: if true;
       allow list: if !('isPublic' in resource.data) || resource.data.isPublic == true || isBoardOwner(resource.data);
@@ -57,13 +62,27 @@ service cloud.firestore {
 
       allow create: if signedIn()
         && request.resource.data.author == request.auth.token.email
+        && request.resource.data.authorUid == request.auth.uid
+        && request.resource.data.hidden == false
         && request.resource.data.body is string
         && request.resource.data.body.size() >= 2
         && request.resource.data.body.size() <= 200
         && canReadBoard(request.resource.data.boardId);
 
-      allow update, delete: if signedIn()
-        && resource.data.author == request.auth.token.email;
+      allow update: if (
+        signedIn()
+        && resource.data.author == request.auth.token.email
+      ) || (
+        signedIn()
+        && isBoardOwnerById(resource.data.boardId)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['hidden'])
+      );
+
+      allow delete: if signedIn()
+        && (
+          resource.data.author == request.auth.token.email ||
+          resource.data.authorUid == request.auth.uid
+        );
     }
 
     match /boardResponses/{responseId} {
@@ -72,12 +91,20 @@ service cloud.firestore {
       allow create: if request.resource.data.nickname is string
         && request.resource.data.nickname.size() >= 2
         && request.resource.data.nickname.size() <= 12
+        && request.resource.data.author is string
+        && request.resource.data.authorUid is string
+        && (
+          (!signedIn() && request.resource.data.author == "" && request.resource.data.authorUid == "") ||
+          (signedIn() && request.resource.data.author == request.auth.token.email && request.resource.data.authorUid == request.auth.uid)
+        )
         && request.resource.data.checkedIndices is list
         && request.resource.data.checkedIndices.size() >= 1
         && request.resource.data.checkedIndices.size() <= 9
         && canReadBoard(request.resource.data.boardId);
 
-      allow update, delete: if false;
+      allow update: if false;
+      allow delete: if signedIn()
+        && resource.data.authorUid == request.auth.uid;
     }
   }
 }
