@@ -39,6 +39,7 @@ service cloud.firestore {
           (
             !signedIn()
             && request.resource.data.ownerUid == ""
+            && request.resource.data.owner == boardId
           )
         )
         && request.resource.data.isPublic is bool

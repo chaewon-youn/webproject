@@ -9,7 +9,7 @@ import {
   signInWithPopup,
   signOut
 } from "firebase/auth";
-import { addDoc, collection, deleteDoc, doc, getDoc, getDocs, increment, onSnapshot, query, serverTimestamp, updateDoc, where } from "firebase/firestore";
+import { addDoc, collection, deleteDoc, doc, getDoc, getDocs, increment, onSnapshot, query, serverTimestamp, setDoc, updateDoc, where } from "firebase/firestore";
 import "./App.css";
 
 const fallbackOptions = ["검색 결과 1", "검색 결과 2", "검색 결과 3"];
@@ -83,6 +83,14 @@ function normalizeRankingTitle(value) {
     .trim();
 }
 
+function normalizeBoardId(value) {
+  return value.trim().toLowerCase();
+}
+
+function isValidBoardId(value) {
+  return /^[a-z0-9_-]{2,30}$/.test(value);
+}
+
 export default function App() {
   const [page, setPage] = useState(() => {
     const fromHash = window.location.hash?.replace("#", "");
@@ -147,6 +155,7 @@ export default function App() {
   const [feedbackMsg, setFeedbackMsg] = useState("");
   const [feedbackType, setFeedbackType] = useState("info");
   const feedbackTimerRef = useRef(null);
+  const manageMsgTimerRef = useRef(null);
 
   const filledCount = useMemo(() => makerCells.filter(Boolean).length, [makerCells]);
   const completedLineCount = useMemo(() => countBingoLines(detailChecked), [detailChecked]);
@@ -409,10 +418,25 @@ export default function App() {
     }, 1000);
   }
 
+  function showManageMsg(msg) {
+    if (manageMsgTimerRef.current) {
+      window.clearTimeout(manageMsgTimerRef.current);
+    }
+    setManageMsg(msg);
+    if (!msg) return;
+    manageMsgTimerRef.current = window.setTimeout(() => {
+      setManageMsg("");
+      manageMsgTimerRef.current = null;
+    }, 1000);
+  }
+
   useEffect(() => {
     return () => {
       if (feedbackTimerRef.current) {
         window.clearTimeout(feedbackTimerRef.current);
+      }
+      if (manageMsgTimerRef.current) {
+        window.clearTimeout(manageMsgTimerRef.current);
       }
     };
   }, []);
@@ -1093,11 +1117,11 @@ export default function App() {
       const posterHeight = Math.round(posterWidth * 1.18);
       const titleY = posterY + posterHeight + 40;
 
-      ctx.fillStyle = "#fff5f8";
+      ctx.fillStyle = "#ffffff";
       ctx.beginPath();
       ctx.roundRect(x, y, cellWidth, cellHeight, 24);
       ctx.fill();
-      ctx.strokeStyle = "#c57a90";
+      ctx.strokeStyle = "#9e1b3f";
       ctx.lineWidth = 3;
       ctx.stroke();
 
@@ -1175,9 +1199,10 @@ export default function App() {
     if (!db) return setUploadMsg("Firebase DB가 아직 연결되지 않았습니다.");
     setShareBoard(null);
     if (filledCount !== 9) return setUploadMsg("업로드 전에 9칸을 모두 채워주세요.");
-    const ownerName = currentUser || boardOwnerId.trim();
+    const guestBoardId = normalizeBoardId(boardOwnerId);
+    const ownerName = currentUser || guestBoardId;
     if (!ownerName) return setUploadMsg("비회원 업로드는 작성자 아이디를 입력해 주세요.");
-    if (!currentUser && ownerName.length < 2) return setUploadMsg("작성자 아이디는 2자 이상 입력해 주세요.");
+    if (!currentUser && !isValidBoardId(guestBoardId)) return setUploadMsg("작성자 아이디는 영문 소문자, 숫자, - 또는 _ 조합으로 2~30자 입력해 주세요.");
     if (boardPassword.trim().length < 4) return setUploadMsg("관리 비밀번호는 4자 이상 입력해 주세요.");
     const payload = {
       title: boardTitle.trim() || "덕후의 취향 빙고",
@@ -1190,9 +1215,19 @@ export default function App() {
       createdAt: serverTimestamp()
     };
     try {
-      const saved = await addDoc(collection(db, "boards"), payload);
+      let savedId;
+      if (currentUser) {
+        const saved = await addDoc(collection(db, "boards"), payload);
+        savedId = saved.id;
+      } else {
+        const boardRef = doc(db, "boards", guestBoardId);
+        const existing = await getDoc(boardRef);
+        if (existing.exists()) return setUploadMsg("이미 사용 중인 작성자 아이디입니다. 다른 아이디를 입력해 주세요.");
+        await setDoc(boardRef, payload);
+        savedId = guestBoardId;
+      }
       const board = {
-        id: saved.id,
+        id: savedId,
         title: payload.title,
         owner: payload.owner,
         ownerUid: payload.ownerUid,
@@ -1393,7 +1428,7 @@ export default function App() {
               <div className="row"><p className="meta">로그인: {currentUser}</p><button className="btn" onClick={logout}>로그아웃</button></div>
             ) : (
               <div className="login-notice">
-                <p className="meta">로그인 없이도 작성자 아이디와 관리 비밀번호로 빙고를 업로드할 수 있습니다.</p>
+                <p className="meta">로그인 없이도 직접 정한 관리 아이디와 관리 비밀번호로 빙고를 업로드할 수 있습니다.</p>
                 <button className="btn" onClick={() => setPage("login")}>로그인해서 등록하기</button>
               </div>
             )}
@@ -1434,9 +1469,9 @@ export default function App() {
               {!currentUser && (
                 <input
                   className="field"
-                  placeholder="작성자 아이디 2자 이상"
+                  placeholder="관리 아이디 2~30자 (영문/숫자/-/_)"
                   value={boardOwnerId}
-                  onChange={(e) => setBoardOwnerId(e.target.value)}
+                  onChange={(e) => setBoardOwnerId(e.target.value.toLowerCase())}
                 />
               )}
               <input
@@ -1460,7 +1495,7 @@ export default function App() {
                   {!currentUser && (
                     <div className="guest-upload-notice">
                       <strong>비회원 관리 안내</strong>
-                      <span>수정이나 삭제를 하려면 아래 빙고 ID와 방금 입력한 관리 비밀번호가 필요합니다. 잊지 않게 저장해 주세요.</span>
+                      <span>수정이나 삭제를 하려면 직접 입력한 관리 아이디와 관리 비밀번호가 필요합니다. 잊지 않게 저장해 주세요.</span>
                     </div>
                   )}
                   <input className="field share-url" value={shareBoard.id} readOnly aria-label="빙고 ID" />
@@ -1740,14 +1775,14 @@ export default function App() {
                                 <div className="manage-action-row">
                                   <button className="btn primary" onClick={() => showBoardDetail(board)}>상세 보기</button>
                                   <button className="btn" onClick={() => startManageEdit(board)}>수정</button>
-                                  <button className="btn danger" onClick={() => deleteBoardFromManage(board)}>삭제</button>
+                                  <button className="btn" onClick={() => deleteBoardFromManage(board)}>삭제</button>
                                   <button className="btn" onClick={() => loadManageComments(board)}>댓글 관리</button>
                                 </div>
                                 <div className="manage-action-row">
-                                  <button className="btn" onClick={() => copyShareLink(board, setManageMsg)}>링크 복사</button>
-                                  <button className="btn" onClick={() => shareLink(board, setManageMsg)}>링크 공유</button>
-                                  <button className="btn" onClick={() => downloadBoardImage(board, setManageMsg)}>사진 저장</button>
-                                  <button className="btn" onClick={() => shareBoardImage(board, setManageMsg)}>사진 공유</button>
+                                  <button className="btn" onClick={() => copyShareLink(board, showManageMsg)}>링크 복사</button>
+                                  <button className="btn" onClick={() => shareLink(board, showManageMsg)}>링크 공유</button>
+                                  <button className="btn" onClick={() => downloadBoardImage(board, showManageMsg)}>사진 저장</button>
+                                  <button className="btn" onClick={() => shareBoardImage(board, showManageMsg)}>사진 공유</button>
                                 </div>
                               </div>
                               {manageCommentBoardId === board.id && (

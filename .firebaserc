@@ -1,5 +1,15 @@
 {
   "projects": {
     "default": "web2026-a4f35"
-  }
+  },
+  "targets": {
+    "web2026-a4f35": {
+      "hosting": {
+        "duckgo-project": [
+          "duckgo-project"
+        ]
+      }
+    }
+  },
+  "etags": {}
 }
