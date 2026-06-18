@@ -12,7 +12,6 @@ import {
 import { addDoc, collection, deleteDoc, doc, getDoc, getDocs, increment, onSnapshot, query, serverTimestamp, setDoc, updateDoc, where } from "firebase/firestore";
 import "./App.css";
 
-const fallbackOptions = ["검색 결과 1", "검색 결과 2", "검색 결과 3"];
 const bingoLinePatterns = [
   [0, 1, 2],
   [3, 4, 5],
@@ -22,28 +21,6 @@ const bingoLinePatterns = [
   [2, 5, 8],
   [0, 4, 8],
   [2, 4, 6]
-];
-
-const initialBoards = [
-  {
-    id: "seed-1",
-    title: "덕후의 취향 빙고 #1",
-    owner: "duckA",
-    isPublic: true,
-    views: 0,
-    createdAt: "2026-05-20",
-    cells: [
-      { title: "Berserk", searchTitle: "Berserk", author: "Kentaro Miura", synopsis: "Dark fantasy saga.", review: "세계관이 압도적.", kyoboUrl: "https://search.kyobobook.co.kr/search?keyword=berserk" },
-      { title: "Historie", searchTitle: "Historie", author: "Hitoshi Iwaaki", synopsis: "Ancient historical drama.", review: "몰입감 높은 서사.", kyoboUrl: "https://search.kyobobook.co.kr/search?keyword=historie" },
-      { title: "Kengan Ashura", searchTitle: "Kengan Ashura", author: "Yabako Sandrovich", synopsis: "Corporate martial arts battles.", review: "액션 템포가 좋음.", kyoboUrl: "https://search.kyobobook.co.kr/search?keyword=kengan%20ashura" },
-      { title: "One Piece", searchTitle: "One Piece", author: "Eiichiro Oda", synopsis: "Pirate adventure.", review: "장기 연재의 정석.", kyoboUrl: "https://search.kyobobook.co.kr/search?keyword=one%20piece" },
-      { title: "Chainsaw Man", searchTitle: "Chainsaw Man", author: "Tatsuki Fujimoto", synopsis: "Devil hunter action.", review: "연출이 강렬함.", kyoboUrl: "https://search.kyobobook.co.kr/search?keyword=chainsaw%20man" },
-      { title: "Slam Dunk", searchTitle: "Slam Dunk", author: "Takehiko Inoue", synopsis: "Basketball youth story.", review: "다시 봐도 명작.", kyoboUrl: "https://search.kyobobook.co.kr/search?keyword=slam%20dunk" },
-      { title: "Fullmetal Alchemist", searchTitle: "Fullmetal Alchemist", author: "Hiromu Arakawa", synopsis: "Alchemy adventure.", review: "완성도 높은 구성.", kyoboUrl: "https://search.kyobobook.co.kr/search?keyword=fullmetal%20alchemist" },
-      { title: "Jujutsu Kaisen", searchTitle: "Jujutsu Kaisen", author: "Gege Akutami", synopsis: "Cursed spirit battles.", review: "작화와 연출이 좋음.", kyoboUrl: "https://search.kyobobook.co.kr/search?keyword=jujutsu%20kaisen" },
-      { title: "Death Note", searchTitle: "Death Note", author: "Tsugumi Ohba", synopsis: "Psychological thriller.", review: "긴장감이 뛰어남.", kyoboUrl: "https://search.kyobobook.co.kr/search?keyword=death%20note" }
-    ]
-  }
 ];
 
 function isValidHttpUrl(value) {
@@ -96,7 +73,7 @@ export default function App() {
     const fromHash = window.location.hash?.replace("#", "");
     return fromHash || sessionStorage.getItem("duckgo_current_page") || "home";
   });
-  const [boardFeed, setBoardFeed] = useState(initialBoards);
+  const [boardFeed, setBoardFeed] = useState([]);
   const [makerCells, setMakerCells] = useState(Array(9).fill(null));
   const [activeCellIndex, setActiveCellIndex] = useState(-1);
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -126,6 +103,7 @@ export default function App() {
   const [managePasswordInput, setManagePasswordInput] = useState("");
   const [manageMsg, setManageMsg] = useState("");
   const [managedBoardId, setManagedBoardId] = useState("");
+  const [managedGuestBoard, setManagedGuestBoard] = useState(null);
   const [editingBoardId, setEditingBoardId] = useState("");
   const [editBoardTitle, setEditBoardTitle] = useState("");
   const [editBoardPassword, setEditBoardPassword] = useState("");
@@ -264,7 +242,7 @@ export default function App() {
   }
 
   async function countBoardView(boardId) {
-    if (!db || !boardId || boardId.startsWith("preview_") || boardId.startsWith("seed-")) return;
+    if (!db || !boardId || boardId.startsWith("preview_")) return;
     try {
       await updateDoc(doc(db, "boards", boardId), { views: increment(1) });
     } catch {
@@ -344,7 +322,7 @@ export default function App() {
       const merged = new Map();
       [...publicRows, ...ownerRows].forEach((board) => merged.set(board.id, board));
       const rows = [...merged.values()].sort((a, b) => getBoardTime(b) - getBoardTime(a));
-      setBoardFeed(rows.length > 0 ? rows : initialBoards);
+      setBoardFeed(rows);
     };
 
     const publicQuery = query(collection(db, "boards"), where("isPublic", "==", true));
@@ -381,10 +359,14 @@ export default function App() {
       return () => clearTimeout(t);
     }
     const t = setTimeout(async () => {
+      const controller = new AbortController();
+      const timeoutId = window.setTimeout(() => controller.abort(), 2500);
       try {
         setIsSearching(true);
         setSearchError("");
-        const res = await fetch(`https://api.jikan.moe/v4/manga?q=${encodeURIComponent(keyword)}&limit=6`);
+        const res = await fetch(`https://api.jikan.moe/v4/manga?q=${encodeURIComponent(keyword)}&limit=6`, {
+          signal: controller.signal
+        });
         if (!res.ok) throw new Error();
         const json = await res.json();
         setJikanResults((json.data || []).map((item) => ({
@@ -397,9 +379,10 @@ export default function App() {
           kyoboUrl: toKyoboSearch(item.title)
         })));
       } catch {
-        setSearchError("검색 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.");
+        setSearchError("외부 검색이 지연되어 저장된 작품에서 검색했습니다.");
         setJikanResults([]);
       } finally {
+        window.clearTimeout(timeoutId);
         setIsSearching(false);
       }
     }, 350);
@@ -779,7 +762,6 @@ export default function App() {
     const nickname = responseNickname.trim();
     if (!db) return setResponseMsg("Firebase DB가 아직 연결되지 않았습니다.");
     if (!previewBoard?.id || previewBoard.id.startsWith("preview_")) return setResponseMsg("업로드된 빙고에서만 결과를 등록할 수 있습니다.");
-    if (previewBoard.id.startsWith("seed-")) return setResponseMsg("샘플 빙고에는 결과를 등록할 수 없습니다. 실제 업로드된 빙고에서 등록해 주세요.");
     if (!previewBoard.isPublic && previewBoard.owner !== currentUser) return setResponseMsg("비공개 빙고에는 작성자만 결과를 등록할 수 있습니다.");
     if (nickname.length < 2 || nickname.length > 12) return setResponseMsg("닉네임은 2~12자로 입력해 주세요.");
     if (detailChecked.size === 0) return setResponseMsg("본 작품을 한 칸 이상 체크해 주세요.");
@@ -836,6 +818,7 @@ export default function App() {
 
   async function loadManageComments(board) {
     if (!db) return setManageMsg("Firebase DB가 아직 연결되지 않았습니다.");
+    if (!currentUser) return setManageMsg("댓글 관리는 이메일 또는 구글 로그인 후 사용할 수 있습니다.");
     try {
       const q = query(collection(db, "comments"), where("boardId", "==", board.id));
       const snap = await getDocs(q);
@@ -907,6 +890,9 @@ export default function App() {
       setBoardFeed((rows) => rows.map((row) => (
         row.id === board.id ? { ...row, title, isPublic: editBoardIsPublic, managePassword: password } : row
       )));
+      setManagedGuestBoard((current) => (
+        current?.id === board.id ? { ...current, title, isPublic: editBoardIsPublic, managePassword: password } : current
+      ));
       if (previewBoard?.id === board.id) {
         setPreviewBoard((current) => current ? { ...current, title, isPublic: editBoardIsPublic, managePassword: password } : current);
       }
@@ -928,6 +914,7 @@ export default function App() {
     try {
       await deleteDoc(doc(db, "boards", board.id));
       setBoardFeed((rows) => rows.filter((row) => row.id !== board.id));
+      if (managedGuestBoard?.id === board.id) setManagedGuestBoard(null);
       if (previewBoard?.id === board.id) setPreviewBoard(null);
       if (editingBoardId === board.id) cancelManageEdit();
       setManageMsg("빙고가 삭제되었습니다.");
@@ -953,6 +940,7 @@ export default function App() {
     try {
       await deleteDoc(doc(db, "boards", previewBoard.id));
       setBoardFeed((rows) => rows.filter((row) => row.id !== previewBoard.id));
+      if (managedGuestBoard?.id === previewBoard.id) setManagedGuestBoard(null);
       setPreviewBoard(null);
       setDeleteMsg("");
       setManagedBoardId("");
@@ -983,8 +971,8 @@ export default function App() {
       }
       const board = boardFromFirestore(snap.id, data);
       setManagedBoardId(board.id);
-      setManageMsg("");
-      showBoardDetail(board);
+      setManagedGuestBoard(board);
+      showManageMsg("관리 권한이 확인되었습니다.");
     } catch (error) {
       if (error.code === "permission-denied") {
         setManageMsg("빙고를 불러올 권한이 없습니다. Firebase 규칙 배포 상태를 확인해 주세요.");
@@ -1279,9 +1267,127 @@ export default function App() {
     setSelectedPreviewCell(previewBoard?.cells[i] || null);
   }
 
+  const savedWorkResults = useMemo(() => {
+    const keyword = normalizeRankingTitle(searchQuery);
+    if (keyword.length < 2) return [];
+
+    const works = new Map();
+    boardFeed.forEach((board) => {
+      board.cells.forEach((cell) => {
+        if (!cell?.title) return;
+        const key = cell.rankingKey || normalizeRankingTitle(cell.searchTitle || cell.title);
+        if (!works.has(key)) {
+          works.set(key, {
+            ...cell,
+            id: `saved-${key}`,
+            searchable: normalizeRankingTitle(`${cell.title} ${cell.searchTitle || ""} ${cell.author || ""}`),
+            searchTitle: cell.searchTitle || cell.title,
+            synopsis: cell.synopsis || "줄거리 정보 없음",
+            kyoboUrl: cell.kyoboUrl || toKyoboSearch(cell.searchTitle || cell.title)
+          });
+        }
+      });
+    });
+    const allWorks = [...works.values()];
+    const matchedWorks = allWorks.filter((work) => work.searchable.includes(keyword));
+    return (matchedWorks.length > 0 ? matchedWorks : allWorks).slice(0, 6);
+  }, [boardFeed, searchQuery]);
+
   const visibleResults = jikanResults.length > 0
     ? jikanResults
-    : fallbackOptions.map((t) => ({ title: t, searchTitle: t, synopsis: "", image: "", author: "", kyoboUrl: toKyoboSearch(t) }));
+    : searchQuery.trim().length >= 2 && !isSearching
+      ? savedWorkResults
+      : [];
+
+  function renderManageBoardCard(board) {
+    return (
+      <article className="card-item manage-card" key={board.id}>
+        <div className="board-mini-grid manage-thumb" aria-hidden="true">
+          {board.cells.map((cell, index) => (
+            <div className="board-mini-cell" key={`${board.id}-manage-${index}`}>
+              <CoverImage src={cell?.image} alt={cell?.title || ""} className="board-mini-cover" />
+            </div>
+          ))}
+        </div>
+
+        <div className="manage-content">
+          {editingBoardId === board.id ? (
+            <div className="manage-edit-form">
+              <input
+                className="field"
+                value={editBoardTitle}
+                onChange={(e) => setEditBoardTitle(e.target.value)}
+                placeholder="빙고 제목"
+              />
+              <input
+                className="field"
+                type="password"
+                value={editBoardPassword}
+                onChange={(e) => setEditBoardPassword(e.target.value)}
+                placeholder="관리 비밀번호 4자 이상"
+              />
+              <label className="visibility-control compact">
+                <input type="checkbox" checked={editBoardIsPublic} onChange={(e) => setEditBoardIsPublic(e.target.checked)} />
+                <span>
+                  <strong>공개 빙고</strong>
+                  <small>{editBoardIsPublic ? "메인 목록에 공개됩니다." : "링크 또는 관리에서만 확인합니다."}</small>
+                </span>
+              </label>
+              <div className="manage-actions">
+                <button className="btn primary" onClick={() => saveManagedBoard(board)}>저장</button>
+                <button className="btn" onClick={cancelManageEdit}>취소</button>
+              </div>
+            </div>
+          ) : (
+            <>
+              <div>
+                <h3>{board.title}</h3>
+                <p className="meta">조회 {board.views || 0}회 · {board.isPublic ? "공개" : "비공개"} · {board.createdAt}</p>
+                <p className="meta">ID: {board.id}</p>
+              </div>
+              <div className="manage-actions">
+                <div className="manage-action-row">
+                  <button className="btn primary" onClick={() => showBoardDetail(board)}>상세 보기</button>
+                  <button className="btn" onClick={() => startManageEdit(board)}>수정</button>
+                  <button className="btn" onClick={() => deleteBoardFromManage(board)}>삭제</button>
+                  <button className="btn" onClick={() => loadManageComments(board)}>댓글 관리</button>
+                </div>
+                <div className="manage-action-row">
+                  <button className="btn" onClick={() => copyShareLink(board, showManageMsg)}>링크 복사</button>
+                  <button className="btn" onClick={() => shareLink(board, showManageMsg)}>링크 공유</button>
+                  <button className="btn" onClick={() => downloadBoardImage(board, showManageMsg)}>사진 저장</button>
+                  <button className="btn" onClick={() => shareBoardImage(board, showManageMsg)}>사진 공유</button>
+                </div>
+              </div>
+              {manageCommentBoardId === board.id && (
+                <div className="manage-comment-box">
+                  <div className="head">
+                    <h4>댓글 관리</h4>
+                    <button className="btn small" onClick={() => { setManageCommentBoardId(""); setManageCommentRows([]); }}>닫기</button>
+                  </div>
+                  {manageCommentRows.length === 0 ? (
+                    <p className="meta">등록된 댓글이 없습니다.</p>
+                  ) : (
+                    <div className="manage-comment-list">
+                      {manageCommentRows.map((comment) => (
+                        <article className={`manage-comment-item ${comment.hidden ? "hidden" : ""}`} key={comment.id}>
+                          <div>
+                            <p>{comment.body}</p>
+                            <span>{comment.author} · {comment.createdAt.toLocaleDateString("ko-KR")} · {comment.hidden ? "숨김" : "표시 중"}</span>
+                          </div>
+                          <button className="btn" onClick={() => toggleCommentHidden(comment)}>{comment.hidden ? "숨김 해제" : "숨김"}</button>
+                        </article>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      </article>
+    );
+  }
 
   return (
     <>
@@ -1584,12 +1690,8 @@ export default function App() {
                 <section className="card-item response-submit-card">
                   <div>
                     <h3>내가 푼 빙고 등록</h3>
-                    <p className="meta">
-                      {previewBoard.id.startsWith("seed-")
-                        ? "샘플 빙고는 체험용이라 결과를 저장할 수 없습니다."
-                        : "왼쪽 빙고판에서 본 작품을 체크한 뒤 닉네임으로 결과를 남길 수 있습니다."}
-                    </p>
-                    {!previewBoard.id.startsWith("seed-") && <p className="bingo-line-badge">현재 빙고 {completedLineCount}줄</p>}
+                    <p className="meta">왼쪽 빙고판에서 본 작품을 체크한 뒤 닉네임으로 결과를 남길 수 있습니다.</p>
+                    <p className="bingo-line-badge">현재 빙고 {completedLineCount}줄</p>
                   </div>
                   <div className="response-form">
                     <input
@@ -1599,7 +1701,7 @@ export default function App() {
                       placeholder="닉네임 2~12자"
                       maxLength="12"
                     />
-                    <button className="btn primary" onClick={submitBoardResponse} disabled={previewBoard.id.startsWith("seed-")}>현재 체크 결과 등록</button>
+                    <button className="btn primary" onClick={submitBoardResponse}>현재 체크 결과 등록</button>
                   </div>
                   {responseMsg && <p className="meta">{responseMsg}</p>}
                 </section>
@@ -1715,131 +1817,46 @@ export default function App() {
         {page === "manage" && (
           <section className="panel manage-panel">
             <h2>관리</h2>
-            {currentUser ? (
-              <>
-                <p className="meta">로그인한 계정으로 업로드한 빙고를 바로 관리할 수 있습니다.</p>
-                {manageMsg && <p className="status info">{manageMsg}</p>}
-                {myBoards.length === 0 ? (
-                  <div className="login-notice manage-empty">
-                    <p className="meta">아직 이 계정으로 업로드한 빙고가 없습니다.</p>
-                    <button className="btn primary" onClick={() => setPage("maker")}>빙고 만들러 가기</button>
-                  </div>
-                ) : (
-                  <div className="manage-list">
-                    {myBoards.map((board) => (
-                      <article className="card-item manage-card" key={board.id}>
-                        <div className="board-mini-grid manage-thumb" aria-hidden="true">
-                          {board.cells.map((cell, index) => (
-                            <div className="board-mini-cell" key={`${board.id}-manage-${index}`}>
-                              <CoverImage src={cell?.image} alt={cell?.title || ""} className="board-mini-cover" />
-                            </div>
-                          ))}
-                        </div>
-
-                        <div className="manage-content">
-                          {editingBoardId === board.id ? (
-                            <div className="manage-edit-form">
-                              <input
-                                className="field"
-                                value={editBoardTitle}
-                                onChange={(e) => setEditBoardTitle(e.target.value)}
-                                placeholder="빙고 제목"
-                              />
-                              <input
-                                className="field"
-                                type="password"
-                                value={editBoardPassword}
-                                onChange={(e) => setEditBoardPassword(e.target.value)}
-                                placeholder="관리 비밀번호 4자 이상"
-                              />
-                              <label className="visibility-control compact">
-                                <input type="checkbox" checked={editBoardIsPublic} onChange={(e) => setEditBoardIsPublic(e.target.checked)} />
-                                <span>
-                                  <strong>공개 빙고</strong>
-                                  <small>{editBoardIsPublic ? "메인 목록에 공개됩니다." : "링크 또는 관리에서만 확인합니다."}</small>
-                                </span>
-                              </label>
-                              <div className="manage-actions">
-                                <button className="btn primary" onClick={() => saveManagedBoard(board)}>저장</button>
-                                <button className="btn" onClick={cancelManageEdit}>취소</button>
-                              </div>
-                            </div>
-                          ) : (
-                            <>
-                              <div>
-                                <h3>{board.title}</h3>
-                                <p className="meta">조회 {board.views || 0}회 · {board.isPublic ? "공개" : "비공개"} · {board.createdAt}</p>
-                                <p className="meta">ID: {board.id}</p>
-                              </div>
-                              <div className="manage-actions">
-                                <div className="manage-action-row">
-                                  <button className="btn primary" onClick={() => showBoardDetail(board)}>상세 보기</button>
-                                  <button className="btn" onClick={() => startManageEdit(board)}>수정</button>
-                                  <button className="btn" onClick={() => deleteBoardFromManage(board)}>삭제</button>
-                                  <button className="btn" onClick={() => loadManageComments(board)}>댓글 관리</button>
-                                </div>
-                                <div className="manage-action-row">
-                                  <button className="btn" onClick={() => copyShareLink(board, showManageMsg)}>링크 복사</button>
-                                  <button className="btn" onClick={() => shareLink(board, showManageMsg)}>링크 공유</button>
-                                  <button className="btn" onClick={() => downloadBoardImage(board, showManageMsg)}>사진 저장</button>
-                                  <button className="btn" onClick={() => shareBoardImage(board, showManageMsg)}>사진 공유</button>
-                                </div>
-                              </div>
-                              {manageCommentBoardId === board.id && (
-                                <div className="manage-comment-box">
-                                  <div className="head">
-                                    <h4>댓글 관리</h4>
-                                    <button className="btn small" onClick={() => { setManageCommentBoardId(""); setManageCommentRows([]); }}>닫기</button>
-                                  </div>
-                                  {manageCommentRows.length === 0 ? (
-                                    <p className="meta">등록된 댓글이 없습니다.</p>
-                                  ) : (
-                                    <div className="manage-comment-list">
-                                      {manageCommentRows.map((comment) => (
-                                        <article className={`manage-comment-item ${comment.hidden ? "hidden" : ""}`} key={comment.id}>
-                                          <div>
-                                            <p>{comment.body}</p>
-                                            <span>{comment.author} · {comment.createdAt.toLocaleDateString("ko-KR")} · {comment.hidden ? "숨김" : "표시 중"}</span>
-                                          </div>
-                                          <button className="btn" onClick={() => toggleCommentHidden(comment)}>{comment.hidden ? "숨김 해제" : "숨김"}</button>
-                                        </article>
-                                      ))}
-                                    </div>
-                                  )}
-                                </div>
-                              )}
-                            </>
-                          )}
-                        </div>
-                      </article>
-                    ))}
-                  </div>
-                )}
-              </>
+            <p className="meta">
+              {currentUser
+                ? "로그인한 계정으로 업로드한 빙고를 바로 관리할 수 있습니다."
+                : "비회원으로 업로드한 빙고는 링크 또는 ID와 관리 비밀번호로 열 수 있습니다."}
+            </p>
+            {!currentUser && (
+              <div className="login-card manage-auth-card">
+                <input
+                  className="field"
+                  placeholder="빙고 링크 또는 ID"
+                  value={manageBoardKey}
+                  onChange={(e) => setManageBoardKey(e.target.value)}
+                />
+                <input
+                  className="field"
+                  placeholder="관리 비밀번호"
+                  type="password"
+                  value={managePasswordInput}
+                  onChange={(e) => setManagePasswordInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") openManagedBoard();
+                  }}
+                />
+                <button className="btn primary full" onClick={openManagedBoard}>인증 확인</button>
+              </div>
+            )}
+            {manageMsg && <p className="status info">{manageMsg}</p>}
+            {(currentUser ? myBoards : managedGuestBoard ? [managedGuestBoard] : []).length === 0 ? (
+              <div className="login-notice manage-empty">
+                <p className="meta">
+                  {currentUser
+                    ? "아직 이 계정으로 업로드한 빙고가 없습니다."
+                    : "관리할 비회원 빙고의 ID와 비밀번호를 입력해 주세요."}
+                </p>
+                <button className="btn primary" onClick={() => setPage("maker")}>빙고 만들러 가기</button>
+              </div>
             ) : (
-              <>
-                <p className="meta">비회원으로 업로드한 빙고는 링크 또는 ID와 관리 비밀번호로 열 수 있습니다.</p>
-                <div className="login-card manage-auth-card">
-                  <input
-                    className="field"
-                    placeholder="빙고 링크 또는 ID"
-                    value={manageBoardKey}
-                    onChange={(e) => setManageBoardKey(e.target.value)}
-                  />
-                  <input
-                    className="field"
-                    placeholder="관리 비밀번호"
-                    type="password"
-                    value={managePasswordInput}
-                    onChange={(e) => setManagePasswordInput(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") openManagedBoard();
-                    }}
-                  />
-                  <button className="btn primary full" onClick={openManagedBoard}>인증 확인</button>
-                  {manageMsg && <p className="meta">{manageMsg}</p>}
-                </div>
-              </>
+              <div className="manage-list">
+                {(currentUser ? myBoards : [managedGuestBoard]).filter(Boolean).map((board) => renderManageBoardCard(board))}
+              </div>
             )}
           </section>
         )}

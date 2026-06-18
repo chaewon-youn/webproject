@@ -1,6 +1,6 @@
-:root{--bg:#f1f1f2;--ink:#1f1f22;--card:#fcfcfd;--line:#d5d5da;--accent:#9e1b3f}
+:root{--bg:#f1f1f2;--ink:#1f1f22;--card:#fcfcfd;--line:#d5d5da;--accent:#9e1b3f;--muted:#3f3f46;--muted-soft:#52525b}
 *{box-sizing:border-box}
-body{margin:0;font-family:"Noto Sans KR",sans-serif;background:var(--bg);color:var(--ink);overflow-x:hidden}
+body{margin:0;font-family:"Noto Sans KR",sans-serif;background:var(--bg);color:var(--ink);overflow-x:hidden;-webkit-text-size-adjust:100%;text-size-adjust:100%}
 .topbar{display:flex;justify-content:space-between;align-items:center;padding:10px 18px;border-bottom:1px solid var(--line);background:var(--card);position:sticky;top:0;z-index:10}
 .brand{text-decoration:none;color:var(--ink);font-weight:700;font-size:22px;line-height:1}
 .linklike{border:0;background:transparent;color:inherit;cursor:pointer;padding:0;font:inherit}
@@ -36,7 +36,7 @@ nav .linklike{font-size:16px;font-weight:700}
   border:1px dashed #d6c8cf;
   border-radius:10px;
   background:#faf7f8;
-  color:#666873;
+  color:var(--muted-soft);
   text-align:center;
   font-size:13px;
   line-height:1.45;
@@ -53,12 +53,12 @@ nav .linklike{font-size:16px;font-weight:700}
 .board-mini-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:3px;aspect-ratio:1/1;width:100%}
 .board-mini-cell{min-width:0;overflow:hidden;border-radius:4px;background:#f3eef1;border:1px solid #eadde2}
 .board-mini-cover{width:100%;height:100%;object-fit:cover;display:block}
-.meta{font-size:12px;margin-top:6px;color:#4e4e56;line-height:1.45}
+.meta{font-size:12px;margin-top:6px;color:var(--muted-soft);line-height:1.45}
 .field{display:block;width:100%;max-width:560px;padding:10px;border:1px solid var(--line);border-radius:10px;margin-bottom:10px;background:#fff}
 .mini-list{display:grid;gap:10px}.mini-item{padding:11px 12px;border:1px dashed #d7ccd1;border-radius:8px;background:#faf7f8;font-size:14px}
 .maker-grid{display:grid;gap:8px;grid-template-columns:repeat(3,minmax(80px,1fr));margin-top:10px;overflow-x:hidden}
 .bingo-cell{min-height:92px;display:flex;align-items:center;justify-content:center;text-align:center;font-size:12px}
-.bingo-cell span{opacity:.7}
+.bingo-cell span{opacity:.9;color:var(--muted-soft)}
 .bingo-cell.filled{border-color:#c57a90;background:#fff5f8;color:#6f1630;font-weight:700}
 .maker-cell{position:relative;padding:0;overflow:hidden}
 .cell-edit-button{width:100%;min-height:inherit;padding:10px;border:0;background:transparent;color:inherit;cursor:pointer;font:inherit}
@@ -73,7 +73,7 @@ nav .linklike{font-size:16px;font-weight:700}
 
 .mini-btn{display:flex;justify-content:space-between;align-items:center;gap:8px;background:#fff;border:1px dashed #d7ccd1}
 .mini-btn strong{font-size:14px}
-.mini-btn span{font-size:12px;color:#666;line-height:1.35}
+.mini-btn span{font-size:12px;color:var(--muted-soft);line-height:1.35}
 .mini-btn.selected{border-style:solid;border-color:#c57a90;background:#fff5f8}
 .mini-cover{width:44px;height:58px;flex:0 0 auto;border-radius:6px;object-fit:cover}
 
@@ -117,7 +117,7 @@ nav .linklike{font-size:16px;font-weight:700}
 }
 
 .selected-work span{
-  color:#666873;
+  color:var(--muted-soft);
   font-size:11px;
 }
 
@@ -131,7 +131,7 @@ nav .linklike{font-size:16px;font-weight:700}
   align-items:center;
   gap:10px;
   margin:-2px 0 10px;
-  color:#666873;
+  color:var(--muted-soft);
   font-size:12px;
 }
 
@@ -141,7 +141,7 @@ nav .linklike{font-size:16px;font-weight:700}
 .cell-title{font-size:10px;line-height:1.25;display:block}
 
 
-.subhead{margin:14px 0 8px;font-size:14px;color:#5a5a62}
+.subhead{margin:14px 0 8px;font-size:14px;color:var(--muted-soft)}
 
 
 .modal{animation:modal-fade-in .22s ease-out}
@@ -346,7 +346,7 @@ nav .linklike{font-size:16px;font-weight:700}
 }
 
 .translation-row span{
-  color:#666873;
+  color:var(--muted-soft);
   font-size:11px;
 }
 
@@ -538,7 +538,7 @@ nav .linklike{font-size:16px;font-weight:700}
 }
 
 .visibility-control small{
-  color:#666873;
+  color:var(--muted-soft);
   line-height:1.35;
   text-align:center;
 }
@@ -611,7 +611,7 @@ nav .linklike{font-size:16px;font-weight:700}
 }
 
 .response-item span{
-  color:#666873;
+  color:var(--muted-soft);
   font-size:11px;
 }
 
@@ -664,7 +664,7 @@ nav .linklike{font-size:16px;font-weight:700}
 }
 
 .manage-comment-item span{
-  color:#666873;
+  color:var(--muted-soft);
   font-size:11px;
 }
 
@@ -762,6 +762,15 @@ nav .linklike{font-size:16px;font-weight:700}
   .manage-card{grid-template-columns:132px minmax(0,1fr);gap:12px;min-height:152px}
   .manage-thumb{width:132px}
   .manage-actions .btn{flex:1 1 120px}
+  .btn,
+  .linklike,
+  .tab-row .btn,
+  .card-item strong,
+  .cell-title,
+  .meta{
+    -webkit-font-smoothing:auto;
+    font-weight:600;
+  }
 }
 
 @media (max-width:560px){

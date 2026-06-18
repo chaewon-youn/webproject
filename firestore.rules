@@ -50,6 +50,13 @@ service cloud.firestore {
         && request.resource.data.views == 0;
 
       allow update: if isBoardOwner(resource.data) || (
+        !signedIn()
+        && resource.data.ownerUid == ""
+        && request.resource.data.owner == resource.data.owner
+        && request.resource.data.ownerUid == ""
+        && request.resource.data.cells == resource.data.cells
+        && request.resource.data.views == resource.data.views
+      ) || (
         (!('isPublic' in resource.data) || resource.data.isPublic == true)
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['views'])
         && request.resource.data.views == resource.data.views + 1
